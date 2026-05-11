@@ -329,7 +329,6 @@ def channels_module():
             assert sp.amount == self.data.channel_fee, "INCORRECT_FEE"
 
             self._validate_access_config(sp.record(access_mode=params.access_mode, merkle_root=params.merkle_root))
-            self._send_fee(self.data.channel_fee)
 
             channel_id = self.data.channel_id_counter
             self.data.channels[channel_id] = sp.record(
@@ -352,6 +351,8 @@ def channels_module():
             self.data.channel_admins[channel_id] = admins_set
 
             self.data.channel_id_counter += 1
+
+            self._send_fee(self.data.channel_fee)
 
             sp.emit(
                 sp.record(
@@ -552,33 +553,34 @@ def channels_module():
             )
 
         @sp.entrypoint
-        def hide_channel(self, channel_id):
-            """Hide a channel (soft delete). Creator only."""
-            sp.cast(channel_id, sp.nat)
+        def set_channel_hidden(self, params):
+            """Set a channel's hidden state (soft delete / restore). Creator only."""
+            sp.cast(params, sp.record(channel_id=sp.nat, hidden=sp.bool))
             self._check_not_paused()
             self._check_no_tez_transfer()
 
-            assert channel_id in self.data.channels, "CHANNEL_NOT_FOUND"
-            channel = self.data.channels[channel_id]
+            assert params.channel_id in self.data.channels, "CHANNEL_NOT_FOUND"
+            channel = self.data.channels[params.channel_id]
             assert channel.creator == sp.sender, "NOT_CHANNEL_CREATOR"
 
-            self.data.channels[channel_id] = sp.record(
+            self.data.channels[params.channel_id] = sp.record(
                 creator=channel.creator,
                 metadata_uri=channel.metadata_uri,
                 access_mode=channel.access_mode,
                 merkle_root=channel.merkle_root,
                 merkle_uri=channel.merkle_uri,
                 message_count=channel.message_count,
-                hidden=True,
+                hidden=params.hidden,
                 timestamp=channel.timestamp,
             )
 
             sp.emit(
                 sp.record(
-                    channel_id=channel_id,
-                    hidden_by=sp.sender,
+                    channel_id=params.channel_id,
+                    hidden=params.hidden,
+                    updated_by=sp.sender,
                 ),
-                tag="channel_hidden",
+                tag="channel_hidden_set",
             )
 
         # =======================================================================
@@ -731,7 +733,7 @@ def channel_deploy_shadownet():
 
     MULTISIG_ADDRESS = sp.address("KT1KeGd4YtjcKqgyiXUPJQkm2iYA3fQwLGQP")
     FEE_RECIPIENT_ADDRESS = sp.address("KT1KeGd4YtjcKqgyiXUPJQkm2iYA3fQwLGQP")
-    MESSAGE_FEE = sp.mutez(100000)
+    MESSAGE_FEE = sp.mutez(25000)
     CHANNEL_FEE = sp.mutez(100000)
 
     contract_metadata = sp.big_map(
