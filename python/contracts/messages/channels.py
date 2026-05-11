@@ -751,3 +751,30 @@ def channel_deploy_shadownet():
         counter=sp.nat(0),
     )
     scenario += contract
+
+@sp.add_test()
+def channel_deploy_mainnet():
+    """Deployment scenario for Tezos mainnet."""
+    scenario = sp.test_scenario("channel_deploy_mainnet", channels_module)
+    scenario.h1("Teia Channels - Deployment Mainnet")
+
+    MULTISIG_ADDRESS = sp.address("KT1J9FYz29RBQi1oGLw8uXyACrzXzV1dHuvb")
+    FEE_RECIPIENT_ADDRESS = sp.address("KT1J9FYz29RBQi1oGLw8uXyACrzXzV1dHuvb")
+    MESSAGE_FEE = sp.mutez(25000)
+    CHANNEL_FEE = sp.mutez(100000)
+
+    contract_metadata = sp.big_map(
+        {
+            "": sp.scenario_utils.bytes_of_string("ipfs://bafkreia2utxnnxyxwbtpb56bpfebby732h57xvzvuauai6kjvjrd6qfmxe"),
+        }
+    )
+
+    contract = channels_module.Channels(
+        multisig_address=MULTISIG_ADDRESS,
+        fee_recipient=FEE_RECIPIENT_ADDRESS,
+        message_fee=MESSAGE_FEE,
+        channel_fee=CHANNEL_FEE,
+        metadata=contract_metadata,
+        counter=sp.nat(0),
+    )
+    scenario += contract
