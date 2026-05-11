@@ -738,7 +738,7 @@ def channel_deploy_shadownet():
 
     contract_metadata = sp.big_map(
         {
-            "": sp.scenario_utils.bytes_of_string("ipfs://aaa"),
+            "": sp.scenario_utils.bytes_of_string("ipfs://bafkreia2utxnnxyxwbtpb56bpfebby732h57xvzvuauai6kjvjrd6qfmxe"),
         }
     )
 
