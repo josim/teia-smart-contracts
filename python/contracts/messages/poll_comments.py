@@ -13,7 +13,9 @@ def poll_comments_module():
     Comment:
     - CONTRACT_PAUSED: Contract is globally paused
     - TEZ_TRANSFER: Unexpected tez transfer
-    - INCORRECT_FEE: sp.amount does not match the required fee
+    - INCORRECT_FEE: sp.amount does not match the required fee for the action
+      (post_fee for post_comment, edit_fee for edit_comment, hide_fee for
+      set_own_comment_hidden)
     - EMPTY_CONTENT: Comment content is empty
     - CONTENT_TOO_LARGE: Comment content exceeds 32 KiB
     - PARENT_NOT_FOUND: Reply target comment does not exist
@@ -22,6 +24,7 @@ def poll_comments_module():
     - COMMENT_NOT_FOUND: Comment ID does not exist
     - NOT_AUTHORIZED: Caller cannot perform this action
     - USER_BANNED: Caller is on the ban list (blocks post_comment and edit_comment)
+    - VERSION_NOT_FOUND: Requested historical version of a comment does not exist
 
     Token gate / FA2:
     - PENDING_POST_EXISTS: Another post_comment is mid-callback
@@ -73,7 +76,24 @@ def poll_comments_module():
         parent_id=sp.option[sp.nat],
         hidden=sp.bool,
         timestamp=sp.timestamp,
+        version=sp.nat,
     )
+
+    # --- Comment History ---
+    # Snapshot of a prior version of a comment. 
+    # The live version lives in `comments`; `comment_history[(comment_id, n)]` holds the n-th archived
+    # version. Versions start at 1; archived indices 1..comment.version-1 are
+    # populated (empty for never-edited comments at version=1).
+
+    history_entry_type: type = sp.record(
+        poll_id=sp.nat,
+        sender=sp.address,
+        content=sp.bytes,
+        parent_id=sp.option[sp.nat],
+        timestamp=sp.timestamp,
+    )
+
+    history_key_type: type = sp.pair[sp.nat, sp.nat]
 
     # --- Pending Post (for balance_of callback) ---
 
@@ -127,7 +147,9 @@ def poll_comments_module():
 
     proposal_action_type: type = sp.variant(
         set_pause=sp.bool,
-        set_message_fee=sp.mutez,
+        set_post_fee=sp.mutez,
+        set_edit_fee=sp.mutez,
+        set_hide_fee=sp.mutez,
         set_fee_recipient=sp.address,
         update_multisig_address=sp.address,
         update_metadata=metadata_entry_type,
@@ -175,17 +197,20 @@ def poll_comments_module():
         """Teia Poll Comments — FA2 holders can comment on off-chain polls.
         Multisig governs moderation and parameter changes."""
 
-        def __init__(self, multisig_address, fee_recipient, message_fee, fa2_address, token_id, metadata, counter):
+        def __init__(self, multisig_address, fee_recipient, post_fee, edit_fee, hide_fee, fa2_address, token_id, metadata, counter):
             self.data.multisig_address = sp.cast(multisig_address, sp.address)
             self.data.metadata = sp.cast(metadata, metadata_type)
             self.data.paused = False
             self.data.fa2_address = sp.cast(fa2_address, sp.address)
             self.data.token_id = sp.cast(token_id, sp.nat)
             self.data.comments = sp.cast(sp.big_map(), comments_map_type)
+            self.data.comment_history = sp.cast(sp.big_map(), sp.big_map[history_key_type, history_entry_type])
             self.data.banned = sp.cast(sp.big_map(), sp.big_map[sp.address, sp.unit])
             self.data.pending_comment = sp.cast(None, sp.option[pending_comment_type])
             self.data.comment_id_counter = sp.nat(1)
-            self.data.message_fee = sp.cast(message_fee, sp.mutez)
+            self.data.post_fee = sp.cast(post_fee, sp.mutez)
+            self.data.edit_fee = sp.cast(edit_fee, sp.mutez)
+            self.data.hide_fee = sp.cast(hide_fee, sp.mutez)
             self.data.fee_recipient = sp.cast(fee_recipient, sp.address)
             self.data.proposals = sp.cast(sp.big_map(), sp.big_map[sp.nat, proposal_type])
             self.data.votes = sp.cast(sp.big_map(), sp.big_map[vote_key_type, sp.bool])
@@ -260,7 +285,7 @@ def poll_comments_module():
             assert sp.len(params.content) <= 32768, "CONTENT_TOO_LARGE"
             assert not self.data.pending_comment.is_some(), "PENDING_POST_EXISTS"
 
-            assert sp.amount == self.data.message_fee, "INCORRECT_FEE"
+            assert sp.amount == self.data.post_fee, "INCORRECT_FEE"
 
             # Validate parent comment if replying
             if params.parent_id.is_some():
@@ -325,16 +350,14 @@ def poll_comments_module():
                 parent_id=pending.parent_id,
                 hidden=False,
                 timestamp=sp.now,
+                version=sp.nat(1),
             )
 
             self.data.comment_id_counter += 1
 
             self._send_fee(pending.fee)
 
-            # Note: `content` is intentionally NOT emitted in the event so that
-            # `edit_comment` and hide moderation are meaningful — events are part
-            # of permanent block history. Indexers should read content from the
-            # `comments` big_map.
+            # Note: `content` is intentionally NOT emitted in the event
             sp.emit(
                 sp.record(
                     poll_id=pending.poll_id,
@@ -350,11 +373,13 @@ def poll_comments_module():
 
         @sp.entrypoint
         def edit_comment(self, params):
-            """Edit a comment. Sender only. Overwrites content in place."""
+            """Edit a comment. Sender only. Archives the current version into
+            comment_history before overwriting content."""
             sp.cast(params, edit_comment_params_type)
             self._check_not_paused()
-            self._check_no_tez_transfer()
             self._check_not_banned()
+
+            assert sp.amount == self.data.edit_fee, "INCORRECT_FEE"
 
             assert params.comment_id in self.data.comments, "COMMENT_NOT_FOUND"
             comment = self.data.comments[params.comment_id]
@@ -362,19 +387,35 @@ def poll_comments_module():
             assert sp.len(params.content) > 0, "EMPTY_CONTENT"
             assert sp.len(params.content) <= 32768, "CONTENT_TOO_LARGE"
 
+            self.data.comment_history[(params.comment_id, comment.version)] = sp.record(
+                poll_id=comment.poll_id,
+                sender=comment.sender,
+                content=comment.content,
+                parent_id=comment.parent_id,
+                timestamp=comment.timestamp,
+            )
+
+            new_version = comment.version + 1
             self.data.comments[params.comment_id] = sp.record(
                 poll_id=comment.poll_id,
                 sender=comment.sender,
                 content=params.content,
                 parent_id=comment.parent_id,
                 hidden=comment.hidden,
-                timestamp=comment.timestamp,
+                timestamp=sp.now,
+                version=new_version,
             )
+
+            self._send_fee(sp.amount)
 
             sp.emit(
                 sp.record(
+                    poll_id=comment.poll_id,
                     comment_id=params.comment_id,
-                    sender=sp.sender,
+                    sender=comment.sender,
+                    parent_id=comment.parent_id,
+                    timestamp=sp.now,
+                    version=new_version,
                 ),
                 tag="comment_edited",
             )
@@ -384,7 +425,8 @@ def poll_comments_module():
             """Toggle hidden flag on caller's own comment."""
             sp.cast(params, set_own_comment_hidden_params_type)
             self._check_not_paused()
-            self._check_no_tez_transfer()
+
+            assert sp.amount == self.data.hide_fee, "INCORRECT_FEE"
 
             assert params.comment_id in self.data.comments, "COMMENT_NOT_FOUND"
             comment = self.data.comments[params.comment_id]
@@ -397,7 +439,10 @@ def poll_comments_module():
                 parent_id=comment.parent_id,
                 hidden=params.hidden,
                 timestamp=comment.timestamp,
+                version=comment.version,
             )
+
+            self._send_fee(sp.amount)
 
             sp.emit(
                 sp.record(
@@ -425,6 +470,7 @@ def poll_comments_module():
                 parent_id=comment.parent_id,
                 hidden=params.hidden,
                 timestamp=comment.timestamp,
+                version=comment.version,
             )
 
             sp.emit(
@@ -513,15 +559,37 @@ def poll_comments_module():
                     tag="pause_set",
                 )
 
-            if proposal.action.is_variant.set_message_fee():
-                self.data.message_fee = proposal.action.unwrap.set_message_fee()
+            if proposal.action.is_variant.set_post_fee():
+                self.data.post_fee = proposal.action.unwrap.set_post_fee()
                 sp.emit(
                     sp.record(
                         proposal_id=proposal_id,
-                        message_fee=self.data.message_fee,
+                        post_fee=self.data.post_fee,
                         updated_by=sp.sender,
                     ),
-                    tag="message_fee_set",
+                    tag="post_fee_set",
+                )
+
+            if proposal.action.is_variant.set_edit_fee():
+                self.data.edit_fee = proposal.action.unwrap.set_edit_fee()
+                sp.emit(
+                    sp.record(
+                        proposal_id=proposal_id,
+                        edit_fee=self.data.edit_fee,
+                        updated_by=sp.sender,
+                    ),
+                    tag="edit_fee_set",
+                )
+
+            if proposal.action.is_variant.set_hide_fee():
+                self.data.hide_fee = proposal.action.unwrap.set_hide_fee()
+                sp.emit(
+                    sp.record(
+                        proposal_id=proposal_id,
+                        hide_fee=self.data.hide_fee,
+                        updated_by=sp.sender,
+                    ),
+                    tag="hide_fee_set",
                 )
 
             if proposal.action.is_variant.set_fee_recipient():
@@ -601,9 +669,35 @@ def poll_comments_module():
             return self.data.comments[comment_id]
 
         @sp.onchain_view()
-        def get_message_fee(self):
-            """Get the current message fee."""
-            return self.data.message_fee
+        def get_comment_version(self, key):
+            """Get an archived version of a comment.
+
+            `key` is `(comment_id, version)`. Returns the snapshot of the
+            comment at that version. Live state lives in `comments`."""
+            sp.cast(key, history_key_type)
+            assert key in self.data.comment_history, "VERSION_NOT_FOUND"
+            return self.data.comment_history[key]
+
+        @sp.onchain_view()
+        def get_comment_version_count(self, comment_id):
+            """Get the total version count for a comment.
+
+            Versions start at 1, so this returns 1 for a never-edited comment
+            and `1 + number_of_edits` otherwise. Archived snapshots exist at
+            `comment_history[(comment_id, 1..version-1)]`; the live version
+            (index = `version`) lives in `comments[comment_id]`."""
+            sp.cast(comment_id, sp.nat)
+            assert comment_id in self.data.comments, "COMMENT_NOT_FOUND"
+            return self.data.comments[comment_id].version
+
+        @sp.onchain_view()
+        def get_fees(self):
+            """Get the current post/edit/hide fees."""
+            return sp.record(
+                post_fee=self.data.post_fee,
+                edit_fee=self.data.edit_fee,
+                hide_fee=self.data.hide_fee,
+            )
 
         @sp.onchain_view()
         def get_token_gate(self):
@@ -646,20 +740,24 @@ def poll_comments_deploy_shadownet():
 
     MULTISIG_ADDRESS = sp.address("KT1KeGd4YtjcKqgyiXUPJQkm2iYA3fQwLGQP")
     FEE_RECIPIENT_ADDRESS = sp.address("KT1KeGd4YtjcKqgyiXUPJQkm2iYA3fQwLGQP")
-    TEIA_FA2_ADDRESS = sp.address("KT1RHCCYWKDwMzmTZq7kG7H3brHAno3yfMQD")
+    TEIA_FA2_ADDRESS = sp.address("KT1LHXjgnURrnCybZ26mEQM3RQ2tLbpZwmi6")
     TEIA_TOKEN_ID = sp.nat(0)
-    MESSAGE_FEE = sp.mutez(25000)
+    POST_FEE = sp.mutez(25000)
+    EDIT_FEE = sp.mutez(0)
+    HIDE_FEE = sp.mutez(0)
 
     contract_metadata = sp.big_map(
         {
-            "": sp.scenario_utils.bytes_of_string("ipfs://aaa"),
+            "": sp.scenario_utils.bytes_of_string("ipfs://QmSCqrL2xj3W6brABirVVSEX1drjrc3WPCFf681zSkwFi9"),
         }
     )
 
     contract = poll_comments_module.PollComments(
         multisig_address=MULTISIG_ADDRESS,
         fee_recipient=FEE_RECIPIENT_ADDRESS,
-        message_fee=MESSAGE_FEE,
+        post_fee=POST_FEE,
+        edit_fee=EDIT_FEE,
+        hide_fee=HIDE_FEE,
         fa2_address=TEIA_FA2_ADDRESS,
         token_id=TEIA_TOKEN_ID,
         metadata=contract_metadata,
@@ -678,18 +776,22 @@ def poll_comments_deploy_mainnet():
     FEE_RECIPIENT_ADDRESS = sp.address("KT1J9FYz29RBQi1oGLw8uXyACrzXzV1dHuvb")
     TEIA_FA2_ADDRESS = sp.address("KT1QrtA753MSv8VGxkDrKKyJniG5JtuHHbtV")
     TEIA_TOKEN_ID = sp.nat(0)
-    MESSAGE_FEE = sp.mutez(25000)
+    POST_FEE = sp.mutez(25000)
+    EDIT_FEE = sp.mutez(0)
+    HIDE_FEE = sp.mutez(0)
 
     contract_metadata = sp.big_map(
         {
-            "": sp.scenario_utils.bytes_of_string("ipfs://QmXfrEZmN6spvdoqrHvF6ZfhTrL8zfCSJ5nhc2drrn6Rm8"),
+            "": sp.scenario_utils.bytes_of_string("ipfs://QmSCqrL2xj3W6brABirVVSEX1drjrc3WPCFf681zSkwFi9"),
         }
     )
 
     contract = poll_comments_module.PollComments(
         multisig_address=MULTISIG_ADDRESS,
         fee_recipient=FEE_RECIPIENT_ADDRESS,
-        message_fee=MESSAGE_FEE,
+        post_fee=POST_FEE,
+        edit_fee=EDIT_FEE,
+        hide_fee=HIDE_FEE,
         fa2_address=TEIA_FA2_ADDRESS,
         token_id=TEIA_TOKEN_ID,
         metadata=contract_metadata,
