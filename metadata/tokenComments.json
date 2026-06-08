@@ -1,7 +1,7 @@
 {
-    "name": "Teia Poll Comments",
-    "description": "On-chain comments on off-chain teia.art polls, gated by Teia FA2 token ownership. Any token holder can post and reply to comments; senders can edit and hide their own comments. Each of the three sender-facing actions (post, edit, hide) charges its own configurable fee, sent to the fee recipient (typically the Teia multisig); any fee can be set to 0 via governance. Every edit archives the prior version into an on-chain history big_map so the full edit history of any comment is preserved forever and queryable via the get_comment_version view. Any single multisig user can hide or unhide any comment for fast moderation (no fee, no vote); banning a wallet from posting requires a passed multisig proposal. Includes reply threading via parent_id, a contract-wide ban list, and multisig governance for pause, fees (per action), fee recipient, token gate configuration, and contract metadata updates.",
-    "version": "1.2.0",
+    "name": "Teia Token Comments",
+    "description": "On-chain comments on Teia FA2 tokens, gated by ownership of the specific token being commented on. Each post specifies a target (fa2_address, token_id); the caller must hold that token at post time. Any token holder can post and reply to comments on tokens they hold; senders can edit and hide their own comments. Each of the three sender-facing actions (post, edit, hide) charges its own configurable fee, sent to the fee recipient (typically the Teia multisig); any fee can be set to 0 via governance. Every edit archives the prior version into an on-chain history big_map so the full edit history of any comment is preserved forever and queryable via the get_comment_version view. Any single multisig user can hide or unhide any comment for fast moderation (no fee, no vote); banning a wallet from posting requires a passed multisig proposal. Includes reply threading via parent_id (replies must target the same (fa2_address, token_id) as the parent), a contract-wide ban list, and multisig governance for pause, fees (per action), fee recipient, and contract metadata updates.",
+    "version": "1.0.0",
     "license": {
         "name": "MIT",
         "details": "The MIT License"
@@ -10,7 +10,7 @@
     "homepage": "https://teia.art",
     "source": {
         "tools": ["SmartPy"],
-        "location": "https://github.com/teia-community/teia-smart-contracts/blob/main/python/contracts/messages/poll_comments.py"
+        "location": "https://github.com/teia-community/teia-smart-contracts/blob/main/python/contracts/messages/token_comments.py"
     },
     "interfaces": ["TZIP-016"],
     "errors": [
@@ -45,8 +45,8 @@
             "languages": ["en"]
         },
         {
-            "error": { "string": "PARENT_WRONG_POLL" },
-            "expansion": { "string": "The parent comment belongs to a different poll" },
+            "error": { "string": "PARENT_WRONG_TOKEN" },
+            "expansion": { "string": "The parent comment belongs to a different token (fa2_address or token_id mismatch); a reply must target the same (fa2_address, token_id) as its parent" },
             "languages": ["en"]
         },
         {
@@ -86,7 +86,7 @@
         },
         {
             "error": { "string": "INVALID_CALLBACK_SENDER" },
-            "expansion": { "string": "The balance callback can only be invoked by the configured Teia FA2 contract" },
+            "expansion": { "string": "The balance callback can only be invoked by the FA2 contract targeted by the pending post_comment call" },
             "languages": ["en"]
         },
         {
@@ -96,7 +96,7 @@
         },
         {
             "error": { "string": "NOT_TOKEN_HOLDER" },
-            "expansion": { "string": "The caller does not hold the configured Teia token and cannot post comments" },
+            "expansion": { "string": "The caller does not hold the targeted token and cannot post a comment on it" },
             "languages": ["en"]
         },
         {
@@ -106,46 +106,46 @@
         },
         {
             "error": { "string": "INVALID_FA2" },
-            "expansion": { "string": "The configured FA2 contract does not expose a compatible balance_of entrypoint" },
+            "expansion": { "string": "The targeted FA2 contract does not expose a compatible balance_of entrypoint" },
             "languages": ["en"]
         },
         {
-            "error": { "string": "POLL_VIEW_FAILED" },
+            "error": { "string": "TC_VIEW_FAILED" },
             "expansion": { "string": "Failed to call the is_user view on the linked multisig contract" },
             "languages": ["en"]
         },
         {
-            "error": { "string": "POLL_NOT_MULTISIG_USER" },
+            "error": { "string": "TC_NOT_MULTISIG_USER" },
             "expansion": { "string": "The operation can only be executed by one of the linked multisig wallet users" },
             "languages": ["en"]
         },
         {
-            "error": { "string": "POLL_GET_MIN_VOTES_FAILED" },
+            "error": { "string": "TC_GET_MIN_VOTES_FAILED" },
             "expansion": { "string": "Failed to call the get_minimum_votes view on the linked multisig contract" },
             "languages": ["en"]
         },
         {
-            "error": { "string": "POLL_GET_EXPIRATION_FAILED" },
+            "error": { "string": "TC_GET_EXPIRATION_FAILED" },
             "expansion": { "string": "Failed to call the get_expiration_time view on the linked multisig contract" },
             "languages": ["en"]
         },
         {
-            "error": { "string": "POLL_PROPOSAL_EXPIRED" },
+            "error": { "string": "TC_PROPOSAL_EXPIRED" },
             "expansion": { "string": "The proposal has expired and can no longer be executed" },
             "languages": ["en"]
         },
         {
-            "error": { "string": "POLL_NO_PROPOSAL" },
+            "error": { "string": "TC_NO_PROPOSAL" },
             "expansion": { "string": "The given proposal ID does not exist" },
             "languages": ["en"]
         },
         {
-            "error": { "string": "POLL_ALREADY_EXECUTED" },
+            "error": { "string": "TC_ALREADY_EXECUTED" },
             "expansion": { "string": "The proposal has already been executed" },
             "languages": ["en"]
         },
         {
-            "error": { "string": "POLL_NOT_ENOUGH_VOTES" },
+            "error": { "string": "TC_NOT_ENOUGH_VOTES" },
             "expansion": { "string": "The proposal did not receive enough positive votes to be executed" },
             "languages": ["en"]
         }
